@@ -1,0 +1,115 @@
+name: CodSpeed Benchmarks
+
+# Continuous performance measurement for the Rust micro-benchmarks under
+# `src/redisearch_rs`. The benchmark suites are the same criterion suites that
+# `make micro-benchmarks` runs; `codspeed-criterion-compat` swaps criterion's
+# sampler for CPU simulation when the suites run under `cargo codspeed`, so the
+# results are hardware independent and comparable across runs.
+#
+# Results are pushed to https://app.codspeed.io/AvalancheHQ/RediSearch and
+# reported back on the pull request.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  # `workflow_dispatch` lets CodSpeed trigger a backtest run to seed the
+  # baseline data.
+  workflow_dispatch:
+
+# Floor, not a grant: the single job below declares what it needs.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep every run on master: they are the baselines CodSpeed compares against.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  benchmarks:
+    name: Run CodSpeed benchmarks
+    runs-on: ${{ vars.RUNS_ON_X64_MEDIUM || vars.RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read # actions/checkout
+      id-token: write # OpenID Connect authentication with CodSpeed
+    env:
+      # Use the committed Rust C headers instead of regenerating them with
+      # cheadergen, mirroring flow-rust-micro-benchmarks.yml.
+      REDISEARCH_GENERATE_HEADERS: "0"
+      # The Python test dependencies (RLTest & co.) are only needed by the
+      # pytest flows, not by the Rust benchmarks.
+      SKIP_PYTHON_TEST_DEPS: "1"
+      RUST_BACKTRACE: full
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+          # Nothing here pushes.
+          persist-credentials: false
+
+      - name: Install build dependencies
+        working-directory: .install
+        run: ./install_script.sh sudo
+
+      - name: Install cargo-codspeed
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
+        with:
+          tool: cargo-codspeed@5.0.1
+
+      # Most benchmark crates drive the production C code through FFI, so they
+      # link `libredisearch_c_bundle.a`, which the CMake build produces.
+      # Build the C/C++ sources with the clang that `.install` just provisioned,
+      # rather than with the runner's default gcc. LTO stays off: the benchmark
+      # binaries are linked by cargo with the default linker, which cannot
+      # consume the bitcode archives an LTO build produces.
+      - name: Build RediSearch
+        run: |
+          source .install/LLVM_VERSION.sh
+          CC="clang-$LLVM_VERSION" CXX="clang++-$LLVM_VERSION" make build
+
+      - name: Build the benchmark targets
+        working-directory: src/redisearch_rs
+        # Benchmark targets are selected explicitly: the suites left out
+        # (inverted_index_bencher/garbage_collection, rqe_iterators_bencher,
+        # ttl_table_bencher/field*_satisfies_predicate and
+        # vector_score_source_bencher) build very large fixtures whose runtime
+        # under CPU simulation dwarfs the measured code. They can be added back
+        # once the run is sharded.
+        run: >
+          cargo codspeed build --locked
+          -p hyperloglog
+          -p inverted_index_bencher
+          -p numeric_range_tree
+          -p numeric_score_source_bencher
+          -p qint
+          -p rqe_wildcard
+          -p string_utils
+          -p top_k_bencher
+          -p trie_bencher
+          -p ttl_table_bencher
+          -p varint_bencher
+          --bench hyperloglog_operations
+          --bench encoding_decoding
+          --bench add_record
+          --bench add
+          --bench find
+          --bench gc
+          --bench numeric_top_k_optimizer
+          --bench qint-bench
+          --bench matching
+          --bench unicode-tolower-bench
+          --bench top_k
+          --bench operations
+          --bench iter
+          --bench core_operations
+          --bench vector_writer
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        with:
+          mode: simulation
+          working-directory: src/redisearch_rs
+          run: cargo codspeed run

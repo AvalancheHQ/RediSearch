@@ -195,3 +195,33 @@ Benchmark crates (e.g., named `*_bencher`) are pure testing code, so they don't 
    // - Mock or stub the ones that aren't provided by the line above
    redis_mock::mock_or_stub_missing_redis_c_symbols!();
    ```
+
+### Continuous benchmarking with CodSpeed
+
+The workspace `criterion` dependency is [`codspeed-criterion-compat`](https://codspeed.io/docs/reference/codspeed-rust/criterion),
+a drop-in replacement for criterion. `cargo bench` keeps behaving exactly as before —
+same output, same `--save-baseline`/`--baseline` comparisons — and no benchmark
+code has to change. Only when a suite runs under `cargo codspeed` does the
+compatibility layer replace criterion's sampler with CodSpeed's CPU simulation,
+which counts the work performed instead of timing it, so results do not depend on
+how busy or how fast the machine is.
+
+`.github/workflows/codspeed.yml` runs a selected set of suites on every pull
+request and on `master`, and uploads the results to
+[CodSpeed](https://app.codspeed.io/AvalancheHQ/RediSearch). To reproduce a CI run
+locally, install the [CodSpeed CLI](https://codspeed.io/docs/cli) and
+`cargo-codspeed`, build the module first (the benchmark crates link
+`libredisearch_c_bundle.a`), then:
+
+```bash
+make build
+cd src/redisearch_rs
+cargo codspeed build -p <crate> --bench <bench>
+codspeed run --mode simulation -- cargo codspeed run
+```
+
+A new benchmark target is picked up by CI once it is added to the `-p`/`--bench`
+selection of the "Build the benchmark targets" step in the workflow. Keep an eye
+on how long the suite takes: CPU simulation is roughly two orders of magnitude
+slower than a native run, so suites that build very large fixtures (millions of
+entries, HNSW indexes, ...) are deliberately left out of that selection.

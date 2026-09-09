@@ -198,7 +198,13 @@ cheadergen = { version = "0.3.2" }
 # dependency we do not need: timestamps are formatted as UTC, never local time.
 chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
 crc32fast = "1.5.0"
-criterion = { version = "0.8.1", features = ["html_reports"] }
+# `codspeed-criterion-compat` is a drop-in replacement for `criterion`: outside of
+# CodSpeed it runs the benchmarks through criterion as usual (including
+# `--save-baseline`/`--baseline` comparisons), and under `cargo codspeed` it swaps
+# the measurement backend for CodSpeed's instrumentation.
+criterion = { package = "codspeed-criterion-compat", version = "5.0.1", features = [
+    "html_reports",
+] }
 csv = "1.4.0"
 decorum = "0.4"
 enumflags2 = "0.7.12"
