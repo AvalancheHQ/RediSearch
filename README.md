@@ -3,6 +3,7 @@
 <img src="docs/images/logo.svg" alt="RediSearch's Logo" title="RediSearch's Logo" width="300">
 
 [![Discord](https://img.shields.io/discord/697882427875393627)](https://discord.gg/xTbqgTB)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/AvalancheHQ/RediSearch?utm_source=badge)
 
 | Total Coverage | Unit Tests | Flow Tests |
 |----------------|------------|------------|
