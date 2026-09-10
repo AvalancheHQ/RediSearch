@@ -107,34 +107,12 @@
 //! EOF
 //! ```
 
-use std::io;
-
 use std::io::Read;
 use std::io::Seek;
-use std::io::SeekFrom;
 use std::io::Write;
 
-// Internal: Enum to represent valid bit offsets for the header byte
-#[derive(Clone, Copy, Debug)]
-enum BitOffset {
-    Zero = 0,
-    One = 1,
-    Two = 2,
-    Three = 3,
-}
-
-impl BitOffset {
-    // Convert from usize to Offset, safe for indices 0..=3
-    fn from_usize(i: usize) -> Self {
-        match i {
-            0 => BitOffset::Zero,
-            1 => BitOffset::One,
-            2 => BitOffset::Two,
-            3 => BitOffset::Three,
-            _ => unreachable!("index out of bounds for arrays of length 2, 3, or 4"),
-        }
-    }
-}
+// Internal: The largest possible qint record: one leading byte plus up to four 4-byte integers.
+const MAX_ENCODED_SIZE: usize = 1 + 4 * size_of::<u32>();
 
 /// Encodes an array of integers into a QInt buffer.
 ///
@@ -152,18 +130,31 @@ where
     W: Write + Seek,
     [u32; N]: ValidQIntSize,
 {
-    let mut leading = 0;
-    let mut ret = 0;
-    let pos = cursor.stream_position()?;
-    ret += cursor.write(b"\0")?; // Write placeholder for leading byte
+    // The leading byte is only known once every value has been measured, so the record is
+    // assembled locally first: the payload is at most 16 bytes, so it fits in a `u128` that
+    // is filled with fixed-width shifts. The whole record is then handed to the writer with
+    // a single `write_all`, instead of writing a placeholder byte, then one byte per value
+    // byte, and finally seeking back and forth to patch the leading byte.
+    let mut leading = 0u8;
+    let mut payload: u128 = 0;
+    let mut payload_len = 0;
     for (i, value) in values.into_iter().enumerate() {
-        // the following line is safe because i < N <= 4
-        let bit_offset = BitOffset::from_usize(i);
-        ret += qint_encode_stepwise(&mut leading, cursor, value, bit_offset)?;
+        // Number of bytes needed to represent `value`, at least one (a zero value is
+        // still encoded as a single zero byte).
+        let bytes_written = 4 - (value.leading_zeros() as usize / 8).min(3);
+        payload |= (value as u128) << (payload_len * 8);
+        payload_len += bytes_written;
+
+        // encode the bit length of our integer into the leading byte.
+        // 0 means 1 byte, 1 - 2 bytes, 2 - 3 bytes, 3 - 4 bytes.
+        // we encode it at the i*2th place in the leading byte
+        leading |= ((bytes_written - 1) as u8) << (i * 2);
     }
-    cursor.seek(SeekFrom::Start(pos))?;
-    cursor.write_all(&[leading])?;
-    cursor.seek(SeekFrom::Current(ret as i64 - 1))?;
+    let mut buf = [0u8; MAX_ENCODED_SIZE];
+    buf[0] = leading;
+    buf[1..].copy_from_slice(&payload.to_le_bytes());
+    let ret = payload_len + 1;
+    cursor.write_all(&buf[..ret])?;
     Ok(ret)
 }
 
@@ -206,36 +197,6 @@ pub trait ValidQIntSize {}
 impl ValidQIntSize for [u32; 2] {}
 impl ValidQIntSize for [u32; 3] {}
 impl ValidQIntSize for [u32; 4] {}
-
-// Internal: Encodes one byte of using qint encoding, called in a loop.
-#[inline(always)]
-fn qint_encode_stepwise<W>(
-    leading: &mut u8,
-    cursor: &mut W,
-    mut value: u32,
-    bit_offset: BitOffset,
-) -> Result<usize, io::Error>
-where
-    W: Write + Seek,
-{
-    let mut bytes_written: usize = 0;
-    loop {
-        cursor.write_all(&[value as u8])?;
-        bytes_written += 1;
-
-        // shift right until we have no more bigger bytes that are non zero
-        value >>= 8;
-        // do while(value) in c
-        if value == 0 {
-            break;
-        }
-    }
-    // encode the bit length of our integer into the leading byte.
-    // 0 means 1 byte, 1 - 2 bytes, 2 - 3 bytes, 3 - 4 bytes.
-    // we encode it at the i*2th place in the leading byte
-    *leading |= ((bytes_written - 1) as u8) << (bit_offset as u8 * 2);
-    Ok(bytes_written)
-}
 
 /// Internal: Decode an integer value from a buffer based on bit width
 ///
