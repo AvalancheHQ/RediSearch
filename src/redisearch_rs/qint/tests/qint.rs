@@ -155,6 +155,58 @@ fn test_encode_cursor_pos() {
 }
 
 #[test]
+fn test_encoded_bytes_are_stable() {
+    // Pins the on-wire format: the leading byte holds the byte width of each value in
+    // 2-bit fields (0 means 1 byte), followed by the little-endian bytes of each value.
+    // The C decoder relies on this exact layout, so it must survive encoder rewrites.
+    let mut buf = [0u8; MAX_QINT_BUFFER_SIZE];
+    let mut cursor = Cursor::new(buf.as_mut());
+
+    let bytes_written = qint_encode(&mut cursor, [3333, 10]).unwrap(); // 2 bytes, 1 byte
+    assert_eq!(bytes_written, 4);
+    assert_eq!(
+        &cursor.get_ref()[..bytes_written],
+        &[0x01, 0x05, 0x0D, 0x0A]
+    );
+
+    let mut buf = [0u8; MAX_QINT_BUFFER_SIZE];
+    let mut cursor = Cursor::new(buf.as_mut());
+
+    // 4 bytes, 3 bytes, 1 byte
+    let bytes_written = qint_encode(&mut cursor, [1_000_000_000, 70_000, 20]).unwrap();
+    assert_eq!(bytes_written, 9);
+    assert_eq!(
+        &cursor.get_ref()[..bytes_written],
+        &[0x0B, 0x00, 0xCA, 0x9A, 0x3B, 0x70, 0x11, 0x01, 0x14]
+    );
+
+    let mut buf = [0u8; MAX_QINT_BUFFER_SIZE];
+    let mut cursor = Cursor::new(buf.as_mut());
+
+    // 4 bytes, 3 bytes, 1 byte, 4 bytes
+    let bytes_written =
+        qint_encode(&mut cursor, [2_500_000_000, 90_000, 0xFF, 1_500_000_000]).unwrap();
+    assert_eq!(bytes_written, 13);
+    assert_eq!(
+        &cursor.get_ref()[..bytes_written],
+        &[
+            0xCB, 0x00, 0xF9, 0x02, 0x95, 0x90, 0x5F, 0x01, 0xFF, 0x00, 0x2F, 0x68, 0x59
+        ]
+    );
+
+    let mut buf = [0u8; MAX_QINT_BUFFER_SIZE];
+    let mut cursor = Cursor::new(buf.as_mut());
+
+    // zeros still take one byte each
+    let bytes_written = qint_encode(&mut cursor, [0, 0, 0, 0]).unwrap();
+    assert_eq!(bytes_written, 5);
+    assert_eq!(
+        &cursor.get_ref()[..bytes_written],
+        &[0x00, 0x00, 0x00, 0x00, 0x00]
+    );
+}
+
+#[test]
 fn test_out_of_memory_error() {
     let mut buf = [0u8; MAX_QINT_BUFFER_SIZE];
     let buf = &mut buf[0..1];
